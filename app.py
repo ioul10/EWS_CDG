@@ -292,26 +292,46 @@ if not build:
 
 # ─── Data Loading ─────────────────────────────────────────────────────────────
 
-with st.spinner("📡 Téléchargement des données Yahoo Finance..."):
+with st.spinner("📡 Chargement des données..."):
     try:
         validate_date_range(str(start_date), str(end_date))
-        prices, valid_tickers = fetch_prices(
+        prices, valid_tickers, sources = fetch_prices(
             selected_tickers,
             start=str(start_date),
             end=str(end_date),
+            progress=False,
         )
         masi = fetch_index(start=str(start_date), end=str(end_date))
+    except ValueError as e:
+        st.error(f"❌ {e}")
+        st.markdown("""
+        **Comment résoudre :**
+        1. Allez sur [fr.investing.com](https://fr.investing.com)
+        2. Cherchez le titre (ex: *Attijariwafa Bank*)
+        3. Cliquez sur **Données Historiques** → **Télécharger**
+        4. Renommez le fichier : `ATW.csv`, `IAM.csv`, etc.
+        5. Placez-le dans le dossier `data/prices/`
+        """)
+        st.stop()
     except Exception as e:
-        st.error(f"❌ Erreur lors du téléchargement : {e}")
+        st.error(f"❌ Erreur inattendue : {e}")
         st.stop()
 
 if len(valid_tickers) < 2:
-    st.error("❌ Données insuffisantes pour les titres sélectionnés. Essayez une période différente.")
+    st.error("❌ Moins de 2 titres chargés. Ajoutez des fichiers CSV dans data/prices/")
     st.stop()
 
-dropped = [t for t in selected_tickers if t not in valid_tickers]
-if dropped:
-    st.warning(f"⚠️ Titres ignorés (données insuffisantes) : {', '.join(dropped)}")
+# Show data sources
+csv_tickers   = [t for t, s in sources.items() if s == "csv"]
+yahoo_tickers = [t for t, s in sources.items() if s == "yahoo"]
+failed_tickers= [t for t, s in sources.items() if s == "failed"]
+
+if csv_tickers:
+    st.success(f"✅ {len(csv_tickers)} titre(s) chargés depuis CSV local")
+if yahoo_tickers:
+    st.info(f"📡 {len(yahoo_tickers)} titre(s) chargés depuis Yahoo Finance")
+if failed_tickers:
+    st.warning(f"⚠️ Titres non disponibles : {', '.join(failed_tickers)}")
 
 
 # ─── Optimization or Manual ───────────────────────────────────────────────────
