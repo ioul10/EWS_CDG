@@ -31,6 +31,7 @@ from data.masi20_tickers import MASI20_UNIVERSE, get_display_label, get_sector, 
 from modules.data_loader  import fetch_prices, fetch_index, compute_simple_returns, validate_date_range, get_data_summary
 from modules.portfolio    import Portfolio, normalize_weights, equal_weights
 from modules.markowitz    import MarkowitzOptimizer
+from modules.ews_statistical import EWSStatistical
 
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -370,6 +371,12 @@ with st.spinner("⚙️ Calcul des poids optimaux..." if weight_mode == "Markowi
     )
 
 st.success("✅ Portefeuille construit avec succès.")
+# ── EWS Statistical Layer ──────────────────────────────
+ews = EWSStatistical(
+    returns=portfolio.returns,
+    total_value=portfolio.total_value,
+)
+current = ews.get_current_status()
 st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
 
@@ -417,8 +424,7 @@ st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
 # ─── Charts ───────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Évolution", "🥧 Allocation", "📊 Frontière efficiente", "📋 Données"])
-
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Évolution", "🥧 Allocation", "📊 Frontière efficiente", "📋 Données", "🚨 Alertes EWS"])
 # Tab 1 — Portfolio Value Evolution
 with tab1:
     fig = go.Figure()
@@ -572,6 +578,119 @@ with tab4:
         file_name=f"portefeuille_masi20_{date.today()}.csv",
         mime="text/csv",
     )
+# Tab 5 — EWS Alertes
+with tab5:
+
+    # ── Statut du jour ────────────────────────────────
+    st.markdown("### Statut du jour")
+
+    score = current["score_total"]
+    couleur = "#2e7d32" if score <= 2 else "#f57f17" if score <= 5 else "#c62828"
+
+    st.markdown(f"""
+    <div style="background:{couleur}22; border-left:6px solid {couleur};
+                padding:1rem 1.5rem; border-radius:8px; margin-bottom:1rem;">
+        <span style="font-size:1.5rem; font-weight:700; color:{couleur};">
+            {current['niveau_alerte']}
+        </span>
+        <span style="color:#555; margin-left:1rem;">
+            Score : {score} / 8 — {current['date']}
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Score par indicateur ──────────────────────────
+    st.markdown("### Détail des scores")
+    c1, c2, c3, c4 = st.columns(4)
+
+    def score_card(col, label, value, score):
+        color = "#2e7d32" if score == 0 else "#f57f17" if score == 1 else "#c62828"
+        badge = ["🟢 Normal", "🟡 Vigilance", "🔴 Alerte"][score]
+        col.markdown(f"""
+        <div style="border:1px solid {color}44; border-radius:10px;
+                    padding:0.8rem; text-align:center; background:{color}11;">
+            <div style="font-size:0.75rem; color:#666; font-weight:600;
+                        text-transform:uppercase; letter-spacing:0.5px;">{label}</div>
+            <div style="font-size:1.4rem; font-weight:700; color:{color};
+                        margin:0.3rem 0;">{value}</div>
+            <div style="font-size:0.75rem; color:{color};">{badge}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    score_card(c1, "Volatilité 30j",  current["volatilite"],  current["score_vol"])
+    score_card(c2, "Z-Score",         current["z_score"],      current["score_z"])
+    score_card(c3, "Drawdown",        current["drawdown"],     current["score_dd"])
+    score_card(c4, "VaR 99%",         current["var_99"],       current["score_var"])
+
+    st.markdown("")
+
+    # ── Évolution du Score Total ──────────────────────
+    st.markdown("### Évolution du Score d'alerte")
+
+    ews_plot = ews.results[["Score_Total"]].dropna()
+
+    import plotly.graph_objects as go as go_alias
+    fig_ews = go.Figure()
+
+    # Color zones
+    fig_ews.add_hrect(y0=0, y1=2, fillcolor="#2e7d32", opacity=0.06, line_width=0)
+    fig_ews.add_hrect(y0=3, y1=5, fillcolor="#f57f17", opacity=0.06, line_width=0)
+    fig_ews.add_hrect(y0=6, y1=8, fillcolor="#c62828", opacity=0.06, line_width=0)
+
+    fig_ews.add_trace(go.Scatter(
+        x=ews_plot.index,
+        y=ews_plot["Score_Total"],
+        mode="lines",
+        name="Score EWS",
+        line=dict(color="#1F4E79", width=1.5),
+        fill="tozeroy",
+        fillcolor="rgba(31,78,121,0.08)",
+    ))
+
+    fig_ews.add_hline(y=3, line=dict(color="#f57f17", dash="dash", width=1.5),
+                      annotation_text="Vigilance", annotation_position="right")
+    fig_ews.add_hline(y=6, line=dict(color="#c62828", dash="dash", width=1.5),
+                      annotation_text="Critique", annotation_position="right")
+
+    fig_ews.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Score Total (0–8)",
+        yaxis=dict(range=[0, 8.5]),
+        template="plotly_white",
+        height=400,
+        font=dict(family="DM Sans", size=13),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig_ews, use_container_width=True)
+
+    # ── Périodes de stress ────────────────────────────
+    st.markdown("### Périodes de stress détectées")
+    stress_df = ews.get_stress_periods(min_score=3)
+    if not stress_df.empty:
+        st.dataframe(stress_df, use_container_width=True, hide_index=True)
+    else:
+        st.success("✅ Aucune période de stress détectée sur la période analysée.")
+
+    # ── Statistiques globales ─────────────────────────
+    st.markdown("### Résumé statistique")
+    stats = ews.summary_stats()
+    stats_df = pd.DataFrame(
+        stats.items(), columns=["Indicateur", "Valeur"]
+    )
+    st.dataframe(stats_df, use_container_width=True, hide_index=True)
+
+    # ── Export alertes ────────────────────────────────
+    st.markdown("---")
+    alerts_df = ews.get_alerts(min_score=3)
+    if not alerts_df.empty:
+        buffer_ews = io.BytesIO()
+        alerts_df.to_csv(buffer_ews)
+        st.download_button(
+            label="⬇️ Exporter les alertes (CSV)",
+            data=buffer_ews.getvalue(),
+            file_name=f"alertes_ews_{date.today()}.csv",
+            mime="text/csv",
+        )
 
 
 # ─── Footer ───────────────────────────────────────────────────────────────────
