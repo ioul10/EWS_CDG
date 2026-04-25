@@ -629,7 +629,6 @@ with tab5:
 
     ews_plot = ews.results[["Score_Total"]].dropna()
 
-    import plotly.graph_objects as go as go_alias
     fig_ews = go.Figure()
 
     # Color zones
