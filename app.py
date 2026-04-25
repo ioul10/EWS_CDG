@@ -31,7 +31,7 @@ from data.masi20_tickers import MASI20_UNIVERSE, get_display_label, get_sector, 
 from modules.data_loader  import fetch_prices, fetch_index, compute_simple_returns, validate_date_range, get_data_summary
 from modules.portfolio    import Portfolio, normalize_weights, equal_weights
 from modules.markowitz    import MarkowitzOptimizer
-from modules.ews_statistical import EWSStatistical
+from modules.ews_engine import EWSEngine
 
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -372,10 +372,8 @@ with st.spinner("⚙️ Calcul des poids optimaux..." if weight_mode == "Markowi
 
 st.success("✅ Portefeuille construit avec succès.")
 # ── EWS Statistical Layer ──────────────────────────────
-ews = EWSStatistical(
-    returns=portfolio.returns,
-    total_value=portfolio.total_value,
-)
+with st.spinner("🧠 Calcul du score EWS (stat + ML)..."):
+    ews = EWSEngine(portfolio=portfolio)
 current = ews.get_current_status()
 st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
@@ -581,116 +579,189 @@ with tab4:
 # Tab 5 — EWS Alertes
 with tab5:
 
-    # ── Statut du jour ────────────────────────────────
-    st.markdown("### Statut du jour")
+    # ── Score Global du jour ──────────────────────────────
+    st.markdown("### Score EWS Global — Aujourd'hui")
 
-    score = current["score_total"]
-    couleur = "#2e7d32" if score <= 2 else "#f57f17" if score <= 5 else "#c62828"
+    score   = current["score_global"]
+    couleur = current["couleur_global"] if "couleur_global" in current else (
+        "#2e7d32" if score < 4 else "#f57f17" if score < 7 else "#c62828"
+    )
 
     st.markdown(f"""
     <div style="background:{couleur}22; border-left:6px solid {couleur};
-                padding:1rem 1.5rem; border-radius:8px; margin-bottom:1rem;">
-        <span style="font-size:1.5rem; font-weight:700; color:{couleur};">
-            {current['niveau_alerte']}
-        </span>
-        <span style="color:#555; margin-left:1rem;">
-            Score : {score} / 8 — {current['date']}
-        </span>
+                padding:1.2rem 1.5rem; border-radius:10px; margin-bottom:1rem;">
+        <div style="font-size:1.8rem; font-weight:700; color:{couleur};">
+            {current['niveau_global']}
+        </div>
+        <div style="color:#555; margin-top:0.3rem;">
+            Score global : <strong>{score} / 10</strong> —
+            {current['date']}
+        </div>
+        <div style="margin-top:0.5rem; font-size:0.9rem;
+                    color:{couleur}; font-weight:600;">
+            ⚡ Action recommandée : {current['action']}
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Score par indicateur ──────────────────────────
-    st.markdown("### Détail des scores")
-    c1, c2, c3, c4 = st.columns(4)
+    if current["signal_hedge"]:
+        st.error("🚨 Signal de hedging déclenché — Module 3 activé")
 
-    def score_card(col, label, value, score):
-        color = "#2e7d32" if score == 0 else "#f57f17" if score == 1 else "#c62828"
-        badge = ["🟢 Normal", "🟡 Vigilance", "🔴 Alerte"][score]
+    # ── Scores détaillés ─────────────────────────────────
+    st.markdown("### Décomposition du score")
+    col_s, col_m, col_g = st.columns(3)
+
+    def big_card(col, title, score_val, max_val, color, subtitle=""):
+        pct = score_val / max_val * 100
         col.markdown(f"""
-        <div style="border:1px solid {color}44; border-radius:10px;
-                    padding:0.8rem; text-align:center; background:{color}11;">
+        <div style="border:2px solid {color}55; border-radius:12px;
+                    padding:1rem; text-align:center; background:{color}11;">
             <div style="font-size:0.75rem; color:#666; font-weight:600;
-                        text-transform:uppercase; letter-spacing:0.5px;">{label}</div>
-            <div style="font-size:1.4rem; font-weight:700; color:{color};
-                        margin:0.3rem 0;">{value}</div>
-            <div style="font-size:0.75rem; color:{color};">{badge}</div>
+                        text-transform:uppercase; letter-spacing:0.8px;">
+                {title}
+            </div>
+            <div style="font-size:2rem; font-weight:700;
+                        color:{color}; margin:0.4rem 0;">
+                {score_val} <span style="font-size:1rem;
+                color:#999;">/ {max_val}</span>
+            </div>
+            <div style="height:6px; background:#eee; border-radius:3px;">
+                <div style="width:{pct}%; height:100%;
+                            background:{color}; border-radius:3px;"></div>
+            </div>
+            <div style="font-size:0.75rem; color:#888;
+                        margin-top:0.4rem;">{subtitle}</div>
         </div>
         """, unsafe_allow_html=True)
 
-    score_card(c1, "Volatilité 30j",  current["volatilite"],  current["score_vol"])
-    score_card(c2, "Z-Score",         current["z_score"],      current["score_z"])
-    score_card(c3, "Drawdown",        current["drawdown"],     current["score_dd"])
-    score_card(c4, "VaR 99%",         current["var_99"],       current["score_var"])
+    big_card(col_s, "Couche Statistique", current["score_stat"],  8,
+             "#1F4E79", "Vol + Z-score + Drawdown + VaR")
+    big_card(col_m, "Couche ML",          current["score_ml"],    6,
+             "#2E75B6", "Isolation Forest + PCA + Régimes")
+    big_card(col_g, "Score Global EWS",   current["score_global"],10,
+             "#c62828" if score >= 7 else "#f57f17" if score >= 4 else "#2e7d32",
+             f"Régime : {current['regime']}")
 
     st.markdown("")
 
-    # ── Évolution du Score Total ──────────────────────
-    st.markdown("### Évolution du Score d'alerte")
+    # ── Indicateurs détaillés ─────────────────────────────
+    st.markdown("### Indicateurs du jour")
+    c1, c2, c3, c4, c5 = st.columns(5)
 
-    ews_plot = ews.results[["Score_Total"]].dropna()
+    def small_card(col, label, value, note=""):
+        col.markdown(f"""
+        <div style="border:1px solid #d0e4f7; border-radius:8px;
+                    padding:0.7rem; text-align:center; background:#f8fbff;">
+            <div style="font-size:0.7rem; color:#5B7FA6; font-weight:600;
+                        text-transform:uppercase;">{label}</div>
+            <div style="font-size:1.2rem; font-weight:700;
+                        color:#1F4E79;">{value}</div>
+            <div style="font-size:0.7rem; color:#999;">{note}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    small_card(c1, "Volatilité 30j", current["volatilite"])
+    small_card(c2, "Z-Score",        current["z_score"])
+    small_card(c3, "Drawdown",       current["drawdown"])
+    small_card(c4, "VaR 99%",        current["var_99"])
+    small_card(c5, "PC1 Variance",   current["pc1_variance"],
+               "Stress systémique" if current.get("pca_stress") else "Normal")
+
+    st.markdown("")
+
+    # ── Évolution du Score Global ─────────────────────────
+    st.markdown("### Évolution du Score EWS Global")
+
+    ews_plot = ews.results[["Score_Global", "Score_Stat", "Score_ML"]].dropna()
 
     fig_ews = go.Figure()
 
-    # Color zones
-    fig_ews.add_hrect(y0=0, y1=2, fillcolor="#2e7d32", opacity=0.06, line_width=0)
-    fig_ews.add_hrect(y0=3, y1=5, fillcolor="#f57f17", opacity=0.06, line_width=0)
-    fig_ews.add_hrect(y0=6, y1=8, fillcolor="#c62828", opacity=0.06, line_width=0)
+    # Alert zones
+    fig_ews.add_hrect(y0=0,  y1=4,  fillcolor="#2e7d32", opacity=0.05, line_width=0)
+    fig_ews.add_hrect(y0=4,  y1=7,  fillcolor="#f57f17", opacity=0.05, line_width=0)
+    fig_ews.add_hrect(y0=7,  y1=10, fillcolor="#c62828", opacity=0.05, line_width=0)
 
+    # Score global
     fig_ews.add_trace(go.Scatter(
         x=ews_plot.index,
-        y=ews_plot["Score_Total"],
+        y=ews_plot["Score_Global"],
         mode="lines",
-        name="Score EWS",
-        line=dict(color="#1F4E79", width=1.5),
+        name="Score Global EWS",
+        line=dict(color="#1F4E79", width=2.5),
         fill="tozeroy",
         fillcolor="rgba(31,78,121,0.08)",
     ))
 
-    fig_ews.add_hline(y=3, line=dict(color="#f57f17", dash="dash", width=1.5),
-                      annotation_text="Vigilance", annotation_position="right")
-    fig_ews.add_hline(y=6, line=dict(color="#c62828", dash="dash", width=1.5),
-                      annotation_text="Critique", annotation_position="right")
+    # Score stat
+    fig_ews.add_trace(go.Scatter(
+        x=ews_plot.index,
+        y=ews_plot["Score_Stat"] / 8 * 10,
+        mode="lines",
+        name="Score Statistique (normalisé)",
+        line=dict(color="#2E75B6", width=1, dash="dot"),
+        opacity=0.6,
+    ))
+
+    # Score ML
+    fig_ews.add_trace(go.Scatter(
+        x=ews_plot.index,
+        y=ews_plot["Score_ML"] / 6 * 10,
+        mode="lines",
+        name="Score ML (normalisé)",
+        line=dict(color="#ED7D31", width=1, dash="dot"),
+        opacity=0.6,
+    ))
+
+    # Thresholds
+    fig_ews.add_hline(y=4, line=dict(color="#f57f17", dash="dash", width=1.5),
+                      annotation_text="Vigilance (4)", annotation_position="right")
+    fig_ews.add_hline(y=7, line=dict(color="#c62828", dash="dash", width=1.5),
+                      annotation_text="Critique (7)", annotation_position="right")
 
     fig_ews.update_layout(
         xaxis_title="Date",
-        yaxis_title="Score Total (0–8)",
-        yaxis=dict(range=[0, 8.5]),
+        yaxis_title="Score EWS (/10)",
+        yaxis=dict(range=[0, 10.5]),
         template="plotly_white",
-        height=400,
+        height=420,
         font=dict(family="DM Sans", size=13),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified",
     )
     st.plotly_chart(fig_ews, use_container_width=True)
 
-    # ── Périodes de stress ────────────────────────────
+    # ── Périodes de stress ────────────────────────────────
     st.markdown("### Périodes de stress détectées")
-    stress_df = ews.get_stress_periods(min_score=3)
+    stress_df = ews.get_stress_periods()
     if not stress_df.empty:
         st.dataframe(stress_df, use_container_width=True, hide_index=True)
     else:
-        st.success("✅ Aucune période de stress détectée sur la période analysée.")
+        st.success("✅ Aucune période critique détectée sur la période analysée.")
 
-    # ── Statistiques globales ─────────────────────────
+    # ── Signaux hedge ─────────────────────────────────────
+    hedge_df = ews.get_hedge_signals()
+    if not hedge_df.empty:
+        st.markdown(f"### 🚨 Signaux de hedging — {len(hedge_df)} jours")
+        st.dataframe(hedge_df.head(20), use_container_width=True)
+
+    # ── Résumé ────────────────────────────────────────────
     st.markdown("### Résumé statistique")
     stats = ews.summary_stats()
-    stats_df = pd.DataFrame(
-        stats.items(), columns=["Indicateur", "Valeur"]
+    st.dataframe(
+        pd.DataFrame(stats.items(), columns=["Indicateur", "Valeur"]),
+        use_container_width=True, hide_index=True,
     )
-    st.dataframe(stats_df, use_container_width=True, hide_index=True)
 
-    # ── Export alertes ────────────────────────────────
+    # ── Export ────────────────────────────────────────────
     st.markdown("---")
-    alerts_df = ews.get_alerts(min_score=3)
-    if not alerts_df.empty:
-        buffer_ews = io.BytesIO()
-        alerts_df.to_csv(buffer_ews)
-        st.download_button(
-            label="⬇️ Exporter les alertes (CSV)",
-            data=buffer_ews.getvalue(),
-            file_name=f"alertes_ews_{date.today()}.csv",
-            mime="text/csv",
-        )
-
+    buffer_ews = io.BytesIO()
+    ews.results.to_csv(buffer_ews)
+    st.download_button(
+        label="⬇️ Exporter les résultats EWS complets (CSV)",
+        data=buffer_ews.getvalue(),
+        file_name=f"ews_results_{date.today()}.csv",
+        mime="text/csv",
+    )
 
 # ─── Footer ───────────────────────────────────────────────────────────────────
 
